@@ -96,6 +96,25 @@ class MCPBlenderServer:
                                 "type": "object",
                                 "properties": {}
                             }
+                        },
+                        {
+                            "name": "reset_shape_keys",
+                            "description": "Reset shape keys on selected mesh objects (useful for human faces)",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "object_name": {
+                                        "type": "string",
+                                        "description": "Name of the object to reset shape keys (optional, uses active object if not specified)",
+                                        "default": ""
+                                    },
+                                    "reset_to_basis": {
+                                        "type": "boolean",
+                                        "description": "Reset all shape keys to basis (0) value",
+                                        "default": True
+                                    }
+                                }
+                            }
                         }
                     ]
                 }
@@ -111,6 +130,8 @@ class MCPBlenderServer:
                 return self.get_blender_info()
             elif tool_name == "get_scene_info":
                 return self.get_scene_info()
+            elif tool_name == "reset_shape_keys":
+                return self.reset_shape_keys(arguments)
             else:
                 return {
                     "jsonrpc": "2.0",
@@ -434,6 +455,195 @@ print("SCENE_INFO_END")
                         {
                             "type": "text",
                             "text": "Error: Blender scene check timed out"
+                        }
+                    ]
+                }
+            }
+    
+    def reset_shape_keys(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Reset shape keys on mesh objects (useful for human faces)"""
+        if not self.blender_path:
+            return {
+                "jsonrpc": "2.0",
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Blender not found. Please install Blender first."
+                        }
+                    ]
+                }
+            }
+        
+        object_name = args.get("object_name", "")
+        reset_to_basis = args.get("reset_to_basis", True)
+        
+        # Create a script to reset shape keys
+        blender_script = f"""
+import bpy
+import json
+
+# Function to reset shape keys
+def reset_shape_keys(obj_name="", reset_to_basis=True):
+    result_info = {{
+        "success": False,
+        "object_name": "",
+        "shape_keys_reset": 0,
+        "message": ""
+    }}
+    
+    try:
+        # Select the object
+        if obj_name:
+            if obj_name in bpy.data.objects:
+                obj = bpy.data.objects[obj_name]
+                bpy.context.view_layer.objects.active = obj
+                obj.select_set(True)
+            else:
+                result_info["message"] = f"Object '{{obj_name}}' not found"
+                return result_info
+        else:
+            # Use active object
+            obj = bpy.context.active_object
+            if not obj:
+                result_info["message"] = "No active object selected"
+                return result_info
+        
+        if obj.type != 'MESH':
+            result_info["message"] = f"Object '{{obj.name}}' is not a mesh"
+            return result_info
+        
+        if not obj.data.shape_keys:
+            result_info["message"] = f"Object '{{obj.name}}' has no shape keys"
+            return result_info
+        
+        result_info["object_name"] = obj.name
+        
+        # Reset all shape keys
+        shape_keys = obj.data.shape_keys
+        key_blocks = shape_keys.key_blocks
+        
+        reset_count = 0
+        for key_block in key_blocks:
+            if key_block.name != "Basis":  # Don't reset the basis shape
+                if reset_to_basis:
+                    key_block.value = 0.0  # Reset to basis
+                else:
+                    # Reset to neutral position (interpolate between basis and current)
+                    key_block.value = 0.0
+                reset_count += 1
+        
+        result_info["success"] = True
+        result_info["shape_keys_reset"] = reset_count
+        result_info["message"] = f"Successfully reset {{reset_count}} shape keys on '{{obj.name}}'"
+        
+        # Update the mesh
+        obj.data.update()
+        
+    except Exception as e:
+        result_info["message"] = f"Error resetting shape keys: {{str(e)}}"
+    
+    return result_info
+
+# Execute the reset
+result = reset_shape_keys("{object_name}", {str(reset_to_basis).lower()})
+
+print("SHAPE_KEY_RESET_START")
+print(json.dumps(result, indent=2))
+print("SHAPE_KEY_RESET_END")
+"""
+        
+        try:
+            # Run the script in Blender
+            result = subprocess.run([
+                self.blender_path, 
+                "--background", 
+                "--python-expr", 
+                blender_script
+            ], capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                # Parse the output to extract result
+                output = result.stdout
+                if "SHAPE_KEY_RESET_START" in output and "SHAPE_KEY_RESET_END" in output:
+                    start_idx = output.find("SHAPE_KEY_RESET_START") + len("SHAPE_KEY_RESET_START")
+                    end_idx = output.find("SHAPE_KEY_RESET_END")
+                    result_json = output[start_idx:end_idx].strip()
+                    
+                    try:
+                        reset_data = json.loads(result_json)
+                        if reset_data["success"]:
+                            return {
+                                "jsonrpc": "2.0",
+                                "result": {
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": f"✅ Shape Keys Reset Successful!\n\n"
+                                                   f"Object: {reset_data['object_name']}\n"
+                                                   f"Shape Keys Reset: {reset_data['shape_keys_reset']}\n"
+                                                   f"Message: {reset_data['message']}\n\n"
+                                                   f"🎭 Your human face should now be back to its neutral expression!"
+                                        }
+                                    ]
+                                }
+                            }
+                        else:
+                            return {
+                                "jsonrpc": "2.0",
+                                "result": {
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": f"❌ Shape Key Reset Failed\n\nMessage: {reset_data['message']}"
+                                        }
+                                    ]
+                                }
+                            }
+                    except json.JSONDecodeError:
+                        return {
+                            "jsonrpc": "2.0",
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": f"Error parsing reset data: {result_json}"
+                                    }
+                                ]
+                            }
+                        }
+                else:
+                    return {
+                        "jsonrpc": "2.0",
+                        "result": {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": f"Reset result not found in output. Raw output:\n{output}"
+                                }
+                            ]
+                        }
+                    }
+            else:
+                return {
+                    "jsonrpc": "2.0",
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Error resetting shape keys: {result.stderr}"
+                            }
+                        ]
+                    }
+                }
+        except subprocess.TimeoutExpired:
+            return {
+                "jsonrpc": "2.0",
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Error: Blender shape key reset timed out"
                         }
                     ]
                 }
