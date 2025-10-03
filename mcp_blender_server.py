@@ -88,6 +88,14 @@ class MCPBlenderServer:
                                 "type": "object",
                                 "properties": {}
                             }
+                        },
+                        {
+                            "name": "get_scene_info",
+                            "description": "Get information about the current Blender scene",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {}
+                            }
                         }
                     ]
                 }
@@ -101,6 +109,8 @@ class MCPBlenderServer:
                 return self.create_cube(arguments)
             elif tool_name == "get_blender_info":
                 return self.get_blender_info()
+            elif tool_name == "get_scene_info":
+                return self.get_scene_info()
             else:
                 return {
                     "jsonrpc": "2.0",
@@ -254,6 +264,176 @@ print(f"Cube created with size: {size}")
                         {
                             "type": "text",
                             "text": "Error: Blender version check timed out"
+                        }
+                    ]
+                }
+            }
+    
+    def get_scene_info(self) -> Dict[str, Any]:
+        """Get information about the current Blender scene"""
+        if not self.blender_path:
+            return {
+                "jsonrpc": "2.0",
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Blender not found. Please install Blender first."
+                        }
+                    ]
+                }
+            }
+        
+        # Create a script to get scene information
+        blender_script = """
+import bpy
+import json
+
+scene_info = {
+    "scene_name": bpy.context.scene.name,
+    "objects": [],
+    "materials": [],
+    "lights": [],
+    "cameras": [],
+    "meshes": []
+}
+
+# Get all objects in the scene
+for obj in bpy.context.scene.objects:
+    obj_info = {
+        "name": obj.name,
+        "type": obj.type,
+        "location": list(obj.location),
+        "rotation": list(obj.rotation_euler),
+        "scale": list(obj.scale),
+        "visible": obj.visible_get()
+    }
+    
+    if obj.type == 'MESH':
+        obj_info["vertices"] = len(obj.data.vertices)
+        obj_info["faces"] = len(obj.data.polygons)
+        obj_info["edges"] = len(obj.data.edges)
+    
+    scene_info["objects"].append(obj_info)
+
+# Get materials
+for mat in bpy.data.materials:
+    scene_info["materials"].append({
+        "name": mat.name,
+        "use_nodes": mat.use_nodes
+    })
+
+# Get lights
+for light in bpy.data.lights:
+    scene_info["lights"].append({
+        "name": light.name,
+        "type": light.type,
+        "energy": light.energy
+    })
+
+# Get cameras
+for camera in bpy.data.cameras:
+    scene_info["cameras"].append({
+        "name": camera.name,
+        "type": camera.type,
+        "lens": camera.lens
+    })
+
+# Get meshes
+for mesh in bpy.data.meshes:
+    scene_info["meshes"].append({
+        "name": mesh.name,
+        "vertices": len(mesh.vertices),
+        "faces": len(mesh.polygons),
+        "edges": len(mesh.edges)
+    })
+
+print("SCENE_INFO_START")
+print(json.dumps(scene_info, indent=2))
+print("SCENE_INFO_END")
+"""
+        
+        try:
+            # Run the script in Blender
+            result = subprocess.run([
+                self.blender_path, 
+                "--background", 
+                "--python-expr", 
+                blender_script
+            ], capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                # Parse the output to extract scene info
+                output = result.stdout
+                if "SCENE_INFO_START" in output and "SCENE_INFO_END" in output:
+                    start_idx = output.find("SCENE_INFO_START") + len("SCENE_INFO_START")
+                    end_idx = output.find("SCENE_INFO_END")
+                    scene_json = output[start_idx:end_idx].strip()
+                    
+                    try:
+                        scene_data = json.loads(scene_json)
+                        return {
+                            "jsonrpc": "2.0",
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": f"Current Blender Scene Information:\n\nScene: {scene_data['scene_name']}\n\nObjects ({len(scene_data['objects'])}):\n" + 
+                                               "\n".join([f"- {obj['name']} ({obj['type']}) at {obj['location']}" for obj in scene_data['objects']]) +
+                                               f"\n\nMaterials ({len(scene_data['materials'])}):\n" +
+                                               "\n".join([f"- {mat['name']}" for mat in scene_data['materials']]) +
+                                               f"\n\nLights ({len(scene_data['lights'])}):\n" +
+                                               "\n".join([f"- {light['name']} ({light['type']})" for light in scene_data['lights']]) +
+                                               f"\n\nCameras ({len(scene_data['cameras'])}):\n" +
+                                               "\n".join([f"- {cam['name']} ({cam['type']})" for cam in scene_data['cameras']])
+                                    }
+                                ]
+                            }
+                        }
+                    except json.JSONDecodeError:
+                        return {
+                            "jsonrpc": "2.0",
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": f"Error parsing scene data: {scene_json}"
+                                    }
+                                ]
+                            }
+                        }
+                else:
+                    return {
+                        "jsonrpc": "2.0",
+                        "result": {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": f"Scene info not found in output. Raw output:\n{output}"
+                                }
+                            ]
+                        }
+                    }
+            else:
+                return {
+                    "jsonrpc": "2.0",
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Error getting scene info: {result.stderr}"
+                            }
+                        ]
+                    }
+                }
+        except subprocess.TimeoutExpired:
+            return {
+                "jsonrpc": "2.0",
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Error: Blender scene check timed out"
                         }
                     ]
                 }
